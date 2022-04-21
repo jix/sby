@@ -80,7 +80,7 @@ class SbyProc:
         self.logstderr = logstderr
         self.silent = silent
 
-        self.task.procs_pending.append(self)
+        self.task.update_proc_pending(self)
 
         for dep in self.deps:
             dep.register_dep(self)
@@ -127,8 +127,7 @@ class SbyProc:
                 except PermissionError:
                     pass
             self.p.terminate()
-            self.task.procs_running.remove(self)
-            all_procs_running.remove(self)
+            self.task.update_proc_stopped(self)
         self.terminated = True
 
     def poll(self):
@@ -158,9 +157,7 @@ class SbyProc:
                 self.p = subprocess.Popen(self.cmdline, shell=True, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                         stderr=(subprocess.STDOUT if self.logstderr else None))
 
-            self.task.procs_pending.remove(self)
-            self.task.procs_running.append(self)
-            all_procs_running.append(self)
+            self.task.update_proc_running(self)
             self.running = True
             return
 
@@ -177,8 +174,7 @@ class SbyProc:
         if self.p.poll() is not None:
             if not self.silent:
                 self.task.log(f"{self.info}: finished (returncode={self.p.returncode})")
-            self.task.procs_running.remove(self)
-            all_procs_running.remove(self)
+            self.task.update_proc_stopped(self)
             self.running = False
 
             if self.p.returncode == 127:
@@ -309,53 +305,14 @@ class SbyConfig:
     def error(self, logmessage):
         raise SbyAbort(logmessage)
 
-class SbyTask(SbyConfig):
-    def __init__(self, sbyconfig, workdir, early_logs, reusedir):
-        super().__init__()
-        self.used_options = set()
-        self.models = dict()
-        self.workdir = workdir
-        self.reusedir = reusedir
-        self.status = "UNKNOWN"
-        self.total_time = 0
-        self.expect = list()
-        self.design_hierarchy = None
-        self.precise_prop_status = False
 
-        yosys_program_prefix = "" ##yosys-program-prefix##
-        self.exe_paths = {
-            "yosys": os.getenv("YOSYS", yosys_program_prefix + "yosys"),
-            "abc": os.getenv("ABC", yosys_program_prefix + "yosys-abc"),
-            "smtbmc": os.getenv("SMTBMC", yosys_program_prefix + "yosys-smtbmc"),
-            "suprove": os.getenv("SUPROVE", "suprove"),
-            "aigbmc": os.getenv("AIGBMC", "aigbmc"),
-            "avy": os.getenv("AVY", "avy"),
-            "btormc": os.getenv("BTORMC", "btormc"),
-            "pono": os.getenv("PONO", "pono"),
-        }
-
-        self.procs_running = []
+class SbyTaskloop:
+    def __init__(self):
         self.procs_pending = []
+        self.procs_running = []
+        self.tasks = []
 
-        self.start_clock_time = time()
-
-        if os.name == "posix":
-            ru = resource.getrusage(resource.RUSAGE_CHILDREN)
-            self.start_process_time = ru.ru_utime + ru.ru_stime
-
-        self.summary = list()
-
-        self.logfile = open(f"{workdir}/logfile.txt", "a")
-
-        for line in early_logs:
-            print(line, file=self.logfile, flush=True)
-
-        if not reusedir:
-            with open(f"{workdir}/config.sby", "w") as f:
-                for line in sbyconfig:
-                    print(line, file=f)
-
-    def taskloop(self):
+    def run(self):
         for proc in self.procs_pending:
             proc.poll()
 
@@ -379,12 +336,87 @@ class SbyTask(SbyConfig):
             for proc in self.procs_pending:
                 proc.poll()
 
-            if self.opt_timeout is not None:
-                total_clock_time = int(time() - self.start_clock_time)
-                if total_clock_time > self.opt_timeout:
-                    self.log(f"Reached TIMEOUT ({self.opt_timeout} seconds). Terminating all subprocesses.")
-                    self.status = "TIMEOUT"
-                    self.terminate(timeout=True)
+            tasks = self.tasks
+            self.tasks = []
+            for task in tasks:
+                task.check_timeout()
+                if task.procs_pending or task.procs_running:
+                    self.tasks.append(task)
+
+
+class SbyTask(SbyConfig):
+    def __init__(self, sbyconfig, workdir, early_logs, reusedir, taskloop=None):
+        super().__init__()
+        self.used_options = set()
+        self.models = dict()
+        self.workdir = workdir
+        self.reusedir = reusedir
+        self.status = "UNKNOWN"
+        self.total_time = 0
+        self.expect = list()
+        self.design_hierarchy = None
+        self.precise_prop_status = False
+
+        yosys_program_prefix = "" ##yosys-program-prefix##
+        self.exe_paths = {
+            "yosys": os.getenv("YOSYS", yosys_program_prefix + "yosys"),
+            "abc": os.getenv("ABC", yosys_program_prefix + "yosys-abc"),
+            "smtbmc": os.getenv("SMTBMC", yosys_program_prefix + "yosys-smtbmc"),
+            "suprove": os.getenv("SUPROVE", "suprove"),
+            "aigbmc": os.getenv("AIGBMC", "aigbmc"),
+            "avy": os.getenv("AVY", "avy"),
+            "btormc": os.getenv("BTORMC", "btormc"),
+            "pono": os.getenv("PONO", "pono"),
+        }
+
+        self.taskloop = taskloop or SbyTaskloop()
+        self.taskloop.tasks.append(self)
+
+        self.procs_running = []
+        self.procs_pending = []
+
+        self.start_clock_time = time()
+
+        if os.name == "posix":
+            ru = resource.getrusage(resource.RUSAGE_CHILDREN)
+            self.start_process_time = ru.ru_utime + ru.ru_stime
+
+        self.summary = list()
+
+        self.logfile = open(f"{workdir}/logfile.txt", "a")
+
+        for line in early_logs:
+            print(line, file=self.logfile, flush=True)
+
+        if not reusedir:
+            with open(f"{workdir}/config.sby", "w") as f:
+                for line in sbyconfig:
+                    print(line, file=f)
+
+    def check_timeout(self):
+        if self.opt_timeout is not None:
+            total_clock_time = int(time() - self.start_clock_time)
+            if total_clock_time > self.opt_timeout:
+                self.log(f"Reached TIMEOUT ({self.opt_timeout} seconds). Terminating all subprocesses.")
+                self.status = "TIMEOUT"
+                self.terminate(timeout=True)
+
+    def update_proc_pending(self, proc):
+        self.procs_pending.append(proc)
+        self.taskloop.procs_pending.append(proc)
+
+    def update_proc_running(self, proc):
+        self.procs_pending.remove(proc)
+        self.taskloop.procs_pending.remove(proc)
+
+        self.procs_running.append(proc)
+        self.taskloop.procs_running.append(proc)
+        all_procs_running.append(proc)
+
+    def update_proc_stopped(self, proc):
+        self.procs_running.remove(proc)
+        self.taskloop.procs_running.remove(proc)
+        all_procs_running.remove(proc)
 
     def log(self, logmessage):
         tm = localtime()
@@ -646,6 +678,12 @@ class SbyTask(SbyConfig):
             assert 0
 
     def run(self, setupmode):
+        self.setup_procs(setupmode)
+        if not setupmode:
+            self.taskloop.run()
+            self.summarize()
+
+    def setup_procs(self, setupmode):
         with open(f"{self.workdir}/config.sby", "r") as f:
             self.parse_config(f)
 
@@ -719,8 +757,7 @@ class SbyTask(SbyConfig):
             if opt not in self.used_options:
                 self.error(f"Unused option: {opt}")
 
-        self.taskloop()
-
+    def summarize(self):
         total_clock_time = int(time() - self.start_clock_time)
 
         if os.name == "posix":
