@@ -22,7 +22,7 @@ if os.name == "posix":
 import subprocess
 from shutil import copyfile, copytree, rmtree
 from select import select
-from time import time, localtime, sleep, strftime
+from time import monotonic, localtime, sleep, strftime
 from sby_design import SbyProperty, SbyModule, design_hierarchy
 
 all_procs_running = []
@@ -375,7 +375,7 @@ class SbyTask(SbyConfig):
         self.procs_running = []
         self.procs_pending = []
 
-        self.start_clock_time = time()
+        self.start_clock_time = monotonic()
 
         if os.name == "posix":
             ru = resource.getrusage(resource.RUSAGE_CHILDREN)
@@ -398,7 +398,7 @@ class SbyTask(SbyConfig):
 
     def check_timeout(self):
         if self.opt_timeout is not None:
-            total_clock_time = int(time() - self.start_clock_time)
+            total_clock_time = int(monotonic() - self.start_clock_time)
             if total_clock_time > self.opt_timeout:
                 self.log(f"Reached TIMEOUT ({self.opt_timeout} seconds). Terminating all subprocesses.")
                 self.status = "TIMEOUT"
@@ -761,7 +761,7 @@ class SbyTask(SbyConfig):
                 self.error(f"Unused option: {opt}")
 
     def summarize(self):
-        total_clock_time = int(time() - self.start_clock_time)
+        total_clock_time = int(monotonic() - self.start_clock_time)
 
         if os.name == "posix":
             ru = resource.getrusage(resource.RUSAGE_CHILDREN)
