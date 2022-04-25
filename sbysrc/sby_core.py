@@ -393,6 +393,9 @@ class SbyTask(SbyConfig):
                 for line in sbyconfig:
                     print(line, file=f)
 
+    def engine_list(self):
+        return list(enumerate(self.engines))
+
     def check_timeout(self):
         if self.opt_timeout is not None:
             total_clock_time = int(time() - self.start_clock_time)
@@ -710,7 +713,7 @@ class SbyTask(SbyConfig):
         self.handle_str_option("tbtop", None)
 
         if self.opt_smtc is not None:
-            for engine in self.engines:
+            for engine_idx, engine in self.engine_list():
                 if engine[0] != "smtbmc":
                     self.error("Option smtc is only valid for smtbmc engine.")
 
@@ -718,11 +721,11 @@ class SbyTask(SbyConfig):
             if self.opt_skip == 0:
                 self.opt_skip = None
             else:
-                for engine in self.engines:
+                for engine_idx, engine in self.engine_list():
                     if engine[0] not in ["smtbmc", "btor"]:
                         self.error("Option skip is only valid for smtbmc and btor engines.")
 
-        if len(self.engines) == 0:
+        if len(self.engine_list()) == 0:
             self.error("Config file is lacking engine configuration.")
 
         if self.reusedir:
