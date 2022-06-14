@@ -51,6 +51,7 @@ class SbyProc:
         self.running = False
         self.finished = False
         self.terminated = False
+        self.exited = False
         self.checkretcode = False
         self.task = task
         self.info = info
@@ -87,6 +88,9 @@ class SbyProc:
 
         self.output_callback = None
         self.exit_callback = None
+
+        if self.task.timeout_reached:
+            self.terminate(True)
 
     def register_dep(self, next_proc):
         if self.finished:
@@ -128,10 +132,18 @@ class SbyProc:
                     pass
             self.p.terminate()
             self.task.update_proc_stopped(self)
+        elif not self.finished and not self.terminated and not self.exited:
+            self.task.update_proc_canceled(self)
         self.terminated = True
 
-    def poll(self):
-        if self.finished or self.terminated:
+    def poll(self, force_unchecked=False):
+        if self.task.task_local_abort and not force_unchecked:
+            try:
+                self.poll(True)
+            except SbyAbort:
+                self.task.terminate(True)
+            return
+        if self.finished or self.terminated or self.exited:
             return
 
         if not self.running:
@@ -176,23 +188,22 @@ class SbyProc:
                 self.task.log(f"{self.info}: finished (returncode={self.p.returncode})")
             self.task.update_proc_stopped(self)
             self.running = False
+            self.exited = True
 
             if self.p.returncode == 127:
-                self.task.status = "ERROR"
                 if not self.silent:
                     self.task.log(f"{self.info}: COMMAND NOT FOUND. ERROR.")
                 self.terminated = True
-                self.task.terminate()
+                self.task.proc_failed(self)
                 return
 
             self.handle_exit(self.p.returncode)
 
             if self.checkretcode and self.p.returncode != 0:
-                self.task.status = "ERROR"
                 if not self.silent:
                     self.task.log(f"{self.info}: task failed. ERROR.")
                 self.terminated = True
-                self.task.terminate()
+                self.task.proc_failed(self)
                 return
 
             self.finished = True
@@ -311,24 +322,27 @@ class SbyTaskloop:
         self.procs_pending = []
         self.procs_running = []
         self.tasks = []
+        self.poll_now = False
 
     def run(self):
         for proc in self.procs_pending:
             proc.poll()
 
-        while len(self.procs_running):
+        while len(self.procs_running) or self.poll_now:
             fds = []
             for proc in self.procs_running:
                 if proc.running:
                     fds.append(proc.p.stdout)
 
-            if os.name == "posix":
-                try:
-                    select(fds, [], [], 1.0) == ([], [], [])
-                except InterruptedError:
-                    pass
-            else:
-                sleep(0.1)
+            if not self.poll_now:
+                if os.name == "posix":
+                    try:
+                        select(fds, [], [], 1.0) == ([], [], [])
+                    except InterruptedError:
+                        pass
+                else:
+                    sleep(0.1)
+            self.poll_now = False
 
             for proc in self.procs_running:
                 proc.poll()
@@ -342,6 +356,11 @@ class SbyTaskloop:
                 task.check_timeout()
                 if task.procs_pending or task.procs_running:
                     self.tasks.append(task)
+                else:
+                    task.exit_callback()
+
+        for task in self.tasks:
+            task.exit_callback()
 
 
 class SbyTask(SbyConfig):
@@ -356,6 +375,8 @@ class SbyTask(SbyConfig):
         self.expect = list()
         self.design = None
         self.precise_prop_status = False
+        self.timeout_reached = False
+        self.task_local_abort = False
 
         yosys_program_prefix = "" ##yosys-program-prefix##
         self.exe_paths = {
@@ -420,6 +441,10 @@ class SbyTask(SbyConfig):
         self.procs_running.remove(proc)
         self.taskloop.procs_running.remove(proc)
         all_procs_running.remove(proc)
+
+    def update_proc_canceled(self, proc):
+        self.procs_pending.remove(proc)
+        self.taskloop.procs_pending.remove(proc)
 
     def log(self, logmessage):
         tm = localtime()
@@ -654,8 +679,17 @@ class SbyTask(SbyConfig):
         return self.models[model_name]
 
     def terminate(self, timeout=False):
+        if timeout:
+            self.timeout_reached = True
         for proc in list(self.procs_running):
             proc.terminate(timeout=timeout)
+        for proc in list(self.procs_pending):
+            proc.terminate(timeout=timeout)
+
+    def proc_failed(self, proc):
+        # proc parameter used by autotune override
+        self.status = "ERROR"
+        self.terminate()
 
     def update_status(self, new_status):
         assert new_status in ["PASS", "FAIL", "UNKNOWN", "ERROR"]
