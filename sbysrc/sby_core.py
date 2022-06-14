@@ -354,7 +354,7 @@ class SbyTask(SbyConfig):
         self.status = "UNKNOWN"
         self.total_time = 0
         self.expect = list()
-        self.design_hierarchy = None
+        self.design = None
         self.precise_prop_status = False
 
         yosys_program_prefix = "" ##yosys-program-prefix##
@@ -541,9 +541,9 @@ class SbyTask(SbyConfig):
                 if retcode != 0:
                     self.precise_prop_status = False
                     return
-                if self.design_hierarchy == None:
+                if self.design == None:
                     with open(f"{self.workdir}/model/design.json") as f:
-                        self.design_hierarchy = design_hierarchy(f)
+                        self.design = design_hierarchy(f)
 
             proc.exit_callback = instance_hierarchy_callback
 
@@ -802,7 +802,7 @@ class SbyTask(SbyConfig):
     def print_junit_result(self, f, junit_ts_name, junit_tc_name, junit_format_strict=False):
         junit_time = strftime('%Y-%m-%dT%H:%M:%S')
         if self.precise_prop_status:
-            checks = self.design_hierarchy.get_property_list()
+            checks = self.design.hierarchy.get_property_list()
             junit_tests = len(checks)
             junit_failures = 0
             junit_errors = 0
