@@ -92,7 +92,8 @@ def run(mode, task, engine_idx, engine):
     def exit_callback(retcode):
         if solver_args[0] not in ["avy"]:
             assert retcode == 0
-        assert proc_status is not None
+        if proc_status is None:
+            task.error("aiger engine did not return a status")
 
         aiw_file.close()
 
