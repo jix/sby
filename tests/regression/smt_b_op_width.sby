@@ -1,0 +1,22 @@
+[options]
+mode bmc
+depth 2
+
+[engines]
+smtbmc z3
+
+[script]
+read_verilog -formal top.v
+hierarchy -check -top top
+proc; opt; memory -nordff -nomap; opt -fast
+
+[file top.v]
+module top(b, a0, a1, o);
+    input b;
+    input signed [5:0] a0;
+    input signed [3:0] a1;
+
+    output [4:0] o;
+
+    assign o = b?a0:(|a1);
+endmodule
